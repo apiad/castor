@@ -6,6 +6,7 @@ import typer
 
 from .core import Manager
 from .server import Server
+from .ui import CastorUI
 
 app = typer.Typer()
 
@@ -49,7 +50,8 @@ def run(
         raise typer.Exit(code=1)
 
     server = Server(manager=manager, workers=workers, threads=threads)
-    server.serve()
+    ui = CastorUI(manager, server)
+    ui.run()
 
 
 if __name__ == "__main__":
