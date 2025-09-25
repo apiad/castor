@@ -64,7 +64,13 @@ castor main:manager
 You will see the worker start and process the task.
 
 ```
-Starting worker server...
+Starting server... Ctrl+C to stop.
+```
+
+Alternatively, run in interactive mode to see a rich dashboard with logs and statistics.
+
+```bash
+castor main:manager -i
 ```
 
 ### 3. Run your application
