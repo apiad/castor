@@ -49,7 +49,7 @@ class Server:
         Starts the main worker loop, continuously fetching and dispatching tasks.
         This loop will run until a shutdown is initiated (e.g., via Ctrl+C).
         """
-        print("Starting worker server...")
+        self.info("Starting server.")
         try:
             while not self._shutdown_event.is_set():
                 try:
@@ -61,8 +61,6 @@ class Server:
                 except TimeoutError:
                     # No task in the queue, loop again to check for shutdown.
                     continue
-        except KeyboardInterrupt:
-            print("\nShutdown signal received.")
         finally:
             self.stop()
 
@@ -88,7 +86,7 @@ class Server:
 
     def stop(self):
         """Initiates a graceful shutdown of the worker server and its executors."""
-        self.info("Shutting down executors...")
+        self.info("Shutting down executors.")
         self._shutdown_event.set()
         # shutdown(wait=True) will wait for all non-daemon tasks to complete.
         self._thread_executor.shutdown(wait=True)
@@ -158,7 +156,7 @@ class Server:
             result=result,
         )
         result_queue.put(result_payload, priority=1)
-        self.info(id=task.id, task=task.task_name, msg="Completed successfully.")
+        self.info(id=task.id, task=task.task_name, msg="Completed.")
 
     def _fail_task(self, task: Task, error: str):
         """Updates the task's state on failure and pushes the error."""

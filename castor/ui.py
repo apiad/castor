@@ -25,13 +25,9 @@ class CastorUI:
 
     def _log_listener(self):
         """Listens for log messages from the pub/sub topic and adds them to our deque."""
-        while not self._server._shutdown_event.is_set():
-            try:
-                with self._server._log_channel.subscribe() as listener:
-                    for msg in listener.listen(timeout=1):
-                        self._logs.append(msg)
-            except TimeoutError:
-                continue
+        with self._server._log_channel.subscribe() as listener:
+            for msg in listener.listen():
+                self._logs.append(msg)
 
     def run(self):
         """Starts the server thread and the rich UI."""
@@ -51,11 +47,9 @@ class CastorUI:
                         live.update(self._make_layout())
                         time.sleep(0.5)
             except KeyboardInterrupt:
+                self._server.stop()
                 self._console.clear()
-                # User pressed Ctrl+C, ask for confirmation to shut down
-                if Confirm.ask("[bold yellow]Do you want to shutdown castor?", console=self._console):
-                    self._server.stop()
-                    break
+                break
 
         # Wait for the server to finish shutting down
         server_thread.join()
@@ -107,7 +101,7 @@ class CastorUI:
         log_table.add_column("Message")
 
         for log in self._logs:
-            level_style = "red" if log.level == "ERROR" else "green"
-            log_table.add_row(f"[[{level_style}]{log.level}[/]]", log.id or "-", log.task or "-", log.message)
+            level_style = "red" if log.level == "error" else "green"
+            log_table.add_row(f"[{level_style}]{log.level}[/]", log.id or "-", log.task or "-", log.message)
 
         return Panel(log_table, title="[bold]Logs[/]", border_style="magenta")
