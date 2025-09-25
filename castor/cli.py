@@ -23,6 +23,9 @@ def run(
     threads: int = typer.Option(
         8, "--threads", "-t", help="Number of threads for I/O-bound tasks."
     ),
+    interactive: bool = typer.Option(
+        False, '--interactive', '-i', help="Run an interactive display."
+    )
 ):
     """
     Starts a Castor worker to process background tasks.
@@ -50,8 +53,18 @@ def run(
         raise typer.Exit(code=1)
 
     server = Server(manager=manager, workers=workers, threads=threads)
-    ui = CastorUI(manager, server)
-    ui.run()
+
+    if interactive:
+        ui = CastorUI(manager, server)
+        ui.run()
+    else:
+        try:
+            print("Starting server... Ctrl+C to stop.")
+            server.serve()
+        except KeyboardInterrupt:
+            print("\nStoping server...")
+            server.stop()
+            print("Done.")
 
 
 if __name__ == "__main__":
