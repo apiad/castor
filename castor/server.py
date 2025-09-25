@@ -3,9 +3,20 @@ import threading
 import time
 import traceback
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
+from beaver import Model
 from .core import Manager, Task, TaskResult
+
+
+LogLevel = Literal["info", "error"]
+
+
+class LogMessage(Model):
+    id: str | None = None
+    task: str | None = None
+    message: str
+    level: LogLevel
 
 
 class Server:
@@ -31,6 +42,7 @@ class Server:
         self._thread_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=threads
         )
+        self._log_channel = manager._db.channel("castor_logs", model=LogMessage)
 
     def serve(self):
         """
@@ -54,14 +66,34 @@ class Server:
         finally:
             self.stop()
 
+    def info(self, msg: str, id: str | None = None, task: str | None = None):
+        self._log_channel.publish(
+            LogMessage(
+                id=id,
+                task=task,
+                message=msg,
+                level="info",
+            )
+        )
+
+    def error(self, msg: str, id: str | None = None, task: str | None = None):
+        self._log_channel.publish(
+            LogMessage(
+                id=id,
+                task=task,
+                message=msg,
+                level="error",
+            )
+        )
+
     def stop(self):
         """Initiates a graceful shutdown of the worker server and its executors."""
-        print("Shutting down executors...")
+        self.info("Shutting down executors...")
         self._shutdown_event.set()
         # shutdown(wait=True) will wait for all non-daemon tasks to complete.
         self._thread_executor.shutdown(wait=True)
         self._process_executor.shutdown(wait=True)
-        print("Server stopped.")
+        self.info("Server stopped.")
 
     def _dispatch_task(self, task_id: str):
         """
@@ -69,12 +101,12 @@ class Server:
         """
         task = self._manager.get_task(task_id)
         if not task:
-            print(f"Error: Task {task_id} not found in database, skipping.")
+            self.error(id=task_id, msg="Not found in database, skipping.")
             return
 
         if task.task_name not in self._manager._registry:
             error_msg = f"Task function '{task.task_name}' is not registered."
-            print(f"Error: {error_msg}")
+            self.error(id=task_id, task=task.task_name, msg="Not registered.")
             self._fail_task(task, error_msg)
             return
 
@@ -102,6 +134,7 @@ class Server:
 
         try:
             # 2. Execute the actual task function
+            self.info(id=task.id, task=task.task_name, msg="Starting.")
             result = func(*task.args, **task.kwargs)
             # 3. Handle successful execution
             self._succeed_task(task, result)
@@ -125,6 +158,7 @@ class Server:
             result=result,
         )
         result_queue.put(result_payload, priority=1)
+        self.info(id=task.id, task=task.task_name, msg="Completed successfully.")
 
     def _fail_task(self, task: Task, error: str):
         """Updates the task's state on failure and pushes the error."""
@@ -142,3 +176,4 @@ class Server:
             error=error,
         )
         result_queue.put(result_payload, priority=1)
+        self.error(id=task.id, task=task.task_name, msg=error)
