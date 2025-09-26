@@ -25,7 +25,7 @@ class CastorUI:
 
     def _log_listener(self):
         """Listens for log messages from the pub/sub topic and adds them to our deque."""
-        with self._server._log_channel.subscribe() as listener:
+        with self._manager._logs.subscribe() as listener:
             for msg in listener.listen():
                 self._logs.append(msg)
 

@@ -36,6 +36,16 @@ class TaskResult(Model):
     result: Any = None
 
 
+LogLevel = Literal["info", "error"]
+
+
+class LogMessage(Model):
+    id: str | None = None
+    task: str | None = None
+    message: str
+    level: LogLevel
+
+
 class TaskHandle:
     """
     A user-facing handle to an enqueued task, providing methods to check
@@ -141,6 +151,7 @@ class Manager:
         self._pending_tasks = self._db.queue("castor_pending_tasks")
         # A registry to hold references to the decorated functions.
         self._registry: Dict[str, Callable] = {}
+        self._logs = self._db.channel("castor_logs", model=LogMessage)
 
     def get_task(self, task_id: str) -> Optional[Task]:
         """Retrieves a task's state document from the database."""
@@ -206,3 +217,23 @@ class Manager:
             func.delay = delay # type: ignore
             return func
         return decorator
+
+    def info(self, msg: str, id: str | None = None, task: str | None = None):
+        self._logs.publish(
+            LogMessage(
+                id=id,
+                task=task,
+                message=msg,
+                level="info",
+            )
+        )
+
+    def error(self, msg: str, id: str | None = None, task: str | None = None):
+        self._logs.publish(
+            LogMessage(
+                id=id,
+                task=task,
+                message=msg,
+                level="error",
+            )
+        )

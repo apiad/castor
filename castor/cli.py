@@ -52,7 +52,7 @@ def run(
         print(f"Error: The variable '{path}' is not an instance of a Castor Manager.")
         raise typer.Exit(code=1)
 
-    server = Server(manager=manager, workers=workers, threads=threads)
+    server = Server(manager=manager, workers=workers, threads=threads, manager_path=path)
 
     if interactive:
         ui = CastorUI(manager, server)
