@@ -1,5 +1,12 @@
 # Castor
 
+<!-- Project badges -->
+![PyPI - Version](https://img.shields.io/pypi/v/castor-io)
+![PyPi - Python Version](https://img.shields.io/pypi/pyversions/castor-io)
+![Github - Open Issues](https://img.shields.io/github/issues-raw/apiad/castor)
+![PyPi - Downloads (Monthly)](https://img.shields.io/pypi/dm/castor-io)
+![Github - Commits](https://img.shields.io/github/commit-activity/m/apiad/castor)
+
 Castor is a minimalistic, embedded task manager built on [BeaverDB](https://github.com/apiad/beaver). It's designed to run background tasks (both process and thread-based) in applications where a complicated, distributed broker like Redis is overkill.
 
 It embraces the minimalistic philosophy of BeaverDB while still being feature-full for the use cases where it makes sense.
