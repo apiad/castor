@@ -85,7 +85,7 @@ You will see tasks being processed in the worker log.
 
 - **Task Decorator:** A simple `@manager.task` decorator to turn any function into a background task.
 - **Execution Modes:** Explicitly define tasks as `thread` (for I/O-bound work) or `process` (for CPU-bound work).
-- **Task Handle:** Calling `.delay()` on a task returns a `TaskHandle` object, allowing you to check the status (`.status()`) or wait for the result.
+- **Task Handle:** Calling `.delay()` on a task returns a `TaskHandle` object, allowing you to check the `.status()` or wait for the result.
 - **Synchronous and Asynchronous Results:** Block for a result with `.join()` or wait for it asynchronously with `.resolve()`.
 - **Reliable Backend:** Uses `beaver-db` for a simple and reliable file-based persistence layer.
 - **CLI Worker:** A built-in command-line interface to run the worker server.
@@ -94,6 +94,6 @@ You will see tasks being processed in the worker log.
 
 This is a work in progress. The immediate roadmap includes:
 
-- [ ] **Process-based tasks:** While the `mode='process'` is available in the API, the underlying process pool execution is not yet fully implemented. This is the highest priority.
-- [ ] **Monitoring UI:** A more advanced terminal-based monitoring dashboard for the worker.
+- [x] **Process-based tasks:** While the `mode='process'` is available in the API, the underlying process pool execution is not yet fully implemented. This is the highest priority.
+- [x] **Monitoring UI:** A more advanced terminal-based monitoring dashboard for the worker.
 - [ ] **Retries and error handling:** More robust mechanisms for automatic retries and dead-letter queues.
