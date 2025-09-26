@@ -1,7 +1,9 @@
+# castor/core.py
+
 import asyncio
 import uuid
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Callable, Dict, List, Literal, Optional
 
 from beaver import BeaverDB, Model
@@ -10,11 +12,13 @@ from beaver import BeaverDB, Model
 TaskStatus = Literal["pending", "running", "success", "failed"]
 TaskMode = Literal["thread", "process"]
 
+
 class Task(Model):
     """
     The data model for a task, inheriting from beaver.Model for automatic
     serialization. This represents the state of a task stored in the database.
     """
+
     id: str
     task_name: str
     status: TaskStatus
@@ -27,6 +31,11 @@ class Task(Model):
     finished_at: Optional[str] = None
     result: Any = None
     error: Optional[str] = None
+    # Scheduling and repetition fields
+    execute_at: Optional[str] = None  # ISO 8601 timestamp for scheduled tasks
+    execute_every: Optional[float] = None  # Interval in seconds
+    execute_times: Optional[int] = None  # Number of times to repeat
+    execute_until: Optional[str] = None  # ISO 8601 timestamp
 
 
 class TaskResult(Model):
@@ -46,16 +55,24 @@ class LogMessage(Model):
     level: LogLevel
 
 
+class TaskSchedule(Model):
+    id: str
+    timestamp: float
+
+
 class TaskHandle:
     """
     A user-facing handle to an enqueued task, providing methods to check
     its status and retrieve its result.
     """
+
     def __init__(self, task_id: str, manager: "Manager"):
         self._id = task_id
         self._manager = manager
         # Each task gets a dedicated queue for its result, identified by its ID.
-        self._result_queue = self._manager._db.queue(f"results::{self._id}", model=TaskResult)
+        self._result_queue = self._manager._db.queue(
+            f"results::{self._id}", model=TaskResult
+        )
 
     @property
     def id(self) -> str:
@@ -98,11 +115,16 @@ class TaskHandle:
 
             if result_payload.status == "failed":
                 # Re-raise the exception from the worker.
-                raise Exception(result_payload.error or "Task failed without a specific error message.")
+                raise Exception(
+                    result_payload.error
+                    or "Task failed without a specific error message."
+                )
 
             return result_payload.result
         except TimeoutError:
-            raise TimeoutError(f"Timed out after {timeout}s waiting for task '{self.id}' to complete.")
+            raise TimeoutError(
+                f"Timed out after {timeout}s waiting for task '{self.id}' to complete."
+            )
 
     async def resolve(self, timeout: Optional[float] = None) -> Any:
         """
@@ -115,7 +137,9 @@ class TaskHandle:
         result_payload = item.data
 
         if result_payload.status == "failed":
-            raise Exception(result_payload.error or  "Task failed without a specific error message.")
+            raise Exception(
+                result_payload.error or "Task failed without a specific error message."
+            )
 
         return result_payload.result
 
@@ -138,20 +162,96 @@ class TaskHandle:
         return f"<TaskHandle(id='{self.id}', status='{status}')>"
 
 
+class TaskWrapper:
+    def __init__(self, manager: "Manager", task_name: str, mode: TaskMode, daemon: bool, callable):
+        self.callable = callable
+        self.task_name = task_name
+        self.mode = mode
+        self.daemon = daemon
+        self.manager = manager
+
+    def __call__(self, *args, **kwargs):
+        return self.callable(*args, **kwargs)
+
+    def submit(self,
+        *args,
+        at: datetime | None = None,
+        delay: timedelta | int | None = None,
+        every: timedelta | int | None = None,
+        times: int | None = None,
+        until: datetime | None = None,
+        **kwargs,
+    ) -> TaskHandle:
+        if at and delay:
+            raise ValueError("Cannot specify both 'at' and 'delay'.")
+        if (times or until) and not every:
+            raise ValueError("'times' and 'until' require 'every' to be set.")
+
+        task_id = str(uuid.uuid4())
+        enqueued_time = datetime.now(timezone.utc)
+        execute_at_time = enqueued_time
+
+        if at:
+            execute_at_time = at
+        elif delay:
+            delay_seconds = (
+                delay.total_seconds() if isinstance(delay, timedelta) else delay
+            )
+            execute_at_time = enqueued_time + timedelta(seconds=delay_seconds)
+
+        task = Task(
+            id=task_id,
+            task_name=self.task_name,
+            mode=self.mode,
+            daemon=self.daemon,
+            status="pending",
+            args=list(args),
+            kwargs=kwargs,
+            enqueued_at=enqueued_time.isoformat(),
+            execute_at=execute_at_time.isoformat(),
+        )
+
+        if every:
+            every_seconds = float(
+                every.total_seconds() if isinstance(every, timedelta) else every
+            )
+            task.execute_every=every_seconds
+            task.execute_times=times
+            task.execute_until=until.isoformat() if until else None
+
+        return self.manager.submit(task, execute_at_time)
+
+
 class Manager:
     """
     The central object for managing tasks. It holds the database connection
     and serves as the entry point for defining and dispatching tasks.
     """
+
     def __init__(self, db: BeaverDB):
         self._db = db
         # A dictionary for the state of every task, keyed by task ID.
         self._tasks = self._db.dict("castor_tasks", model=Task)
         # The central queue where new tasks are placed for workers.
         self._pending_tasks = self._db.queue("castor_pending_tasks")
+        # NEW: A sorted set for scheduled tasks. Score is the timestamp.
+        self._scheduled_tasks = self._db.queue("castor_scheduled_tasks", model=TaskSchedule)
         # A registry to hold references to the decorated functions.
         self._registry: Dict[str, Callable] = {}
         self._logs = self._db.channel("castor_logs", model=LogMessage)
+
+    def submit(self, task:Task, at: datetime):
+        self._tasks[task.id] = task
+
+        ts = at.timestamp()
+        # If the task is scheduled for the future, add it to the scheduled set.
+        # Otherwise, put it directly into the pending queue.
+        if at > datetime.now(timezone.utc):
+            self._scheduled_tasks.put(TaskSchedule(id=task.id, timestamp=ts), ts)
+        else:
+            self._pending_tasks.put(task.id, priority=0)
+
+        return TaskHandle(task.id, self)
 
     def get_task(self, task_id: str) -> Optional[Task]:
         """Retrieves a task's state document from the database."""
@@ -186,36 +286,8 @@ class Manager:
             # Store task metadata, including mode and daemon status.
             self._registry[task_name] = func
 
-            def delay(*args, **kwargs) -> TaskHandle:
-                """
-                A non-blocking call that enqueues the task and immediately
-                returns a handle to it.
-                """
-                task_id = str(uuid.uuid4())
-                enqueued_time = datetime.now(timezone.utc).isoformat()
+            return TaskWrapper(self, task_name, mode, daemon, func)
 
-                # Create the task state document.
-                task_doc = Task(
-                    id=task_id,
-                    task_name=task_name,
-                    mode=mode,
-                    daemon=daemon,
-                    status="pending",
-                    args=list(args),
-                    kwargs=kwargs,
-                    enqueued_at=enqueued_time,
-                )
-
-                # Store the state and push the task to the pending queue.
-                # Use dictionary assignment, which is the API for beaver.dict.
-                self._tasks[task_id] = task_doc
-                self._pending_tasks.put(task_id, priority=0)
-
-                return TaskHandle(task_id, self)
-
-            # Attach the .delay() method to the original function object.
-            func.delay = delay # type: ignore
-            return func
         return decorator
 
     def info(self, msg: str, id: str | None = None, task: str | None = None):

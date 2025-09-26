@@ -48,9 +48,9 @@ if __name__ == "__main__":
 
     # Dispatch tasks using the .delay() method.
     # This is a non-blocking call that immediately returns a TaskHandle.
-    email_task_1 = send_email.delay("alice@example.com", "Meeting Reminder")
-    calc_task_1 = cpu_intensive_task.delay(100, 200)
-    email_task_2 = send_email.delay("bob@example.com", "Weekly Report")
+    email_task_1 = send_email.submit("alice@example.com", "Meeting Reminder")
+    calc_task_1 = cpu_intensive_task.submit(100, 200)
+    email_task_2 = send_email.submit("bob@example.com", "Weekly Report")
 
     print(f"Dispatched email task 1 with ID: {email_task_1.id}")
     print(f"Dispatched calculation task with ID: {calc_task_1.id}")

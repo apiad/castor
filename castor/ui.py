@@ -9,19 +9,18 @@ from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
 from rich.panel import Panel
-from rich.prompt import Confirm
 from rich.table import Table
 
-from .core import Manager
+from .core import Manager, LogMessage
 from .server import Server
 
 
-class CastorUI:
+class Dashboard:
     def __init__(self, manager: Manager, server: Server):
         self._manager = manager
         self._server = server
         self._console = Console()
-        self._logs = deque(maxlen=20)  # Store the last 20 log messages
+        self._logs = deque[LogMessage](maxlen=20)  # Store the last 20 log messages
 
     def _log_listener(self):
         """Listens for log messages from the pub/sub topic and adds them to our deque."""

@@ -1,13 +1,16 @@
+# castor/server.py
+
 import concurrent.futures
 import threading
 import time
 import importlib
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Literal
+import uuid
 
 from beaver import Model
-from .core import Manager, Task, TaskResult, LogMessage
+from .core import Manager, Task, TaskResult, LogMessage, TaskSchedule
 
 
 def _process_worker_entrypoint(manager_path: str, task_id: str):
@@ -72,6 +75,9 @@ def _succeed_task(manager: Manager, task: Task, result: Any):
     )
     result_queue.put(result_payload, priority=1)
 
+    # NEW: Handle task repetition
+    _handle_repetition(manager, task)
+
 
 def _fail_task(manager: Manager, task: Task, error: str):
     """Updates the task's state on failure and pushes the error."""
@@ -87,6 +93,53 @@ def _fail_task(manager: Manager, task: Task, error: str):
     )
     result_queue.put(result_payload, priority=1)
 
+    # NEW: Handle task repetition even on failure
+    _handle_repetition(manager, task)
+
+
+def _handle_repetition(manager: Manager, task: Task):
+    """Checks if a task should be repeated and re-enqueues it if necessary."""
+    if not task.execute_every:
+        return
+
+    until = task.execute_until
+    times = task.execute_times
+    every = task.execute_every
+
+    now = datetime.now(timezone.utc)
+
+    # Condition 1: Check 'until'
+    if until and now >= datetime.fromisoformat(until):
+        return
+
+    # Condition 2: Check 'times'
+    if times is not None:
+        if times <= 1:
+            return
+        times -= 1
+
+    # If conditions pass, create and enqueue the next task
+    next_execute_at = datetime.fromisoformat(task.enqueued_at) + timedelta(seconds=every)
+
+    new_task = Task(
+        id=task.id,
+        task_name=task.task_name,
+        mode=task.mode,
+        daemon=task.daemon,
+        status="pending",
+        args=task.args,
+        kwargs=task.kwargs,
+        enqueued_at=now.isoformat(),
+        execute_at=next_execute_at.isoformat(),
+        execute_every=every,
+        execute_until=until,
+        execute_times=times,
+    )
+
+    manager._tasks[new_task.id] = new_task
+    ts = next_execute_at.timestamp()
+    manager._scheduled_tasks.put(TaskSchedule(id=new_task.id, timestamp=ts), ts)
+    manager.info(id=new_task.id, task=task.task_name, msg=f"Re-enqueued for repetition.")
 
 
 class Server:
@@ -98,12 +151,26 @@ class Server:
         self._thread_executor = concurrent.futures.ThreadPoolExecutor(max_workers=threads)
 
     def serve(self):
+        # MODIFIED: Main server loop to handle scheduled tasks
         while not self._shutdown_event.is_set():
             try:
+                # 1. Check for any due scheduled tasks
+                now_timestamp = datetime.now(timezone.utc).timestamp()
+
+                while next_task := self._manager._scheduled_tasks.peek():
+                    if next_task.timestamp <= now_timestamp:
+                        self._dispatch_task(next_task.id)
+                    else:
+                        break
+
+                # 2. Check for pending tasks (blocking with timeout)
                 pending_task_item = self._manager._pending_tasks.get(timeout=1.0)
-                task_id = pending_task_item.data
-                self._dispatch_task(task_id)
+                if pending_task_item:
+                    task_id = pending_task_item.data
+                    self._dispatch_task(task_id)
+
             except TimeoutError:
+                # This is expected when the queue is empty, so we just continue
                 continue
             except KeyboardInterrupt:
                 break

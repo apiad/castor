@@ -6,7 +6,7 @@ import typer
 
 from .core import Manager
 from .server import Server
-from .ui import CastorUI
+from .ui import Dashboard
 
 app = typer.Typer()
 
@@ -55,7 +55,7 @@ def run(
     server = Server(manager=manager, workers=workers, threads=threads, manager_path=path)
 
     if interactive:
-        ui = CastorUI(manager, server)
+        ui = Dashboard(manager, server)
         ui.run()
     else:
         try:

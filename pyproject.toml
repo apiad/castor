@@ -1,6 +1,6 @@
 [project]
 name = "castor-io"
-version = "0.3.1"
+version = "0.4.1"
 description = "Minimalistic, embedded task manager."
 readme = "README.md"
 authors = [
@@ -8,7 +8,7 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
-    "beaver-db>=0.16.5",
+    "beaver-db>=0.16.7",
     "typer>=0.19.2",
 ]
 
