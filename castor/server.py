@@ -108,6 +108,9 @@ class Server:
             except KeyboardInterrupt:
                 break
 
+        if not self._shutdown_event.is_set():
+            self.stop()
+
     def stop(self):
         self._shutdown_event.set()
         self._thread_executor.shutdown(wait=True)

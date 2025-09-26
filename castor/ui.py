@@ -29,30 +29,26 @@ class CastorUI:
             for msg in listener.listen():
                 self._logs.append(msg)
 
+    def _run_ui(self):
+        layout = self._make_layout()
+
+        with Live(layout, console=self._console, screen=True) as live:
+            while not self._server._shutdown_event.is_set():
+                # Refresh the display periodically
+                live.update(self._make_layout())
+                time.sleep(0.5)
+
     def run(self):
         """Starts the server thread and the rich UI."""
-        server_thread = threading.Thread(target=self._server.serve, daemon=True)
-        server_thread.start()
+        ui_thread = threading.Thread(target=self._run_ui, daemon=True)
+        ui_thread.start()
 
         log_thread = threading.Thread(target=self._log_listener, daemon=True)
         log_thread.start()
 
-        layout = self._make_layout()
-
-        while True:
-            try:
-                with Live(layout, console=self._console, screen=True) as live:
-                    while not self._server._shutdown_event.is_set():
-                        # Refresh the display periodically
-                        live.update(self._make_layout())
-                        time.sleep(0.5)
-            except KeyboardInterrupt:
-                self._server.stop()
-                self._console.clear()
-                break
-
-        # Wait for the server to finish shutting down
-        server_thread.join()
+        self._server.serve()
+        ui_thread.join()
+        self._console.clear()
 
     def _make_layout(self) -> Layout:
         """Creates the rich layout for the UI."""
