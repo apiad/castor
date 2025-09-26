@@ -36,7 +36,7 @@ def cpu_intensive_task(a: int, b: int):
     """
     print(f"-> Starting CPU-intensive calculation for {a} + {b}...")
     # Simulate heavy work without sleeping
-    _ = [i * i for i in range(1_000_000)]
+    _ = [i * i for i in range(1000_000)]
     print(f"<- Finished CPU-intensive calculation.")
     return a + b
 

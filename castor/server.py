@@ -10,10 +10,10 @@ from typing import Any, Literal
 import uuid
 
 from beaver import Model
-from .core import Manager, Task, TaskResult, LogMessage, TaskSchedule
+from .core import Manager, Task, TaskResult
 
 
-def _process_worker_entrypoint(manager_path: str, task_id: str):
+def _worker_entrypoint(manager_path: str, task_id: str):
     """
     This is the TOP-LEVEL function that gets executed in the new process.
     It is responsible for re-initializing the manager and running the task.
@@ -30,10 +30,10 @@ def _process_worker_entrypoint(manager_path: str, task_id: str):
         return
 
     # 2. Now that we have a manager, we can use the normal task execution logic
-    _run_task_wrapper(manager, task_id)
+    _run_task(manager, task_id)
 
 
-def _run_task_wrapper(manager: Manager, task_id: str):
+def _run_task(manager: Manager, task_id: str):
     """
     The actual function executed by the pool. Manages the lifecycle of a task.
     This can now be called by both threads and the process entrypoint.
@@ -71,7 +71,9 @@ def _succeed_task(manager: Manager, task: Task, result: Any):
 
     result_queue = manager._db.queue(f"results::{task.id}", model=TaskResult)
     result_payload = TaskResult(
-        id=task.id, status="success", result=result,
+        id=task.id,
+        status="success",
+        result=result,
     )
     result_queue.put(result_payload, priority=1)
 
@@ -89,7 +91,10 @@ def _fail_task(manager: Manager, task: Task, error: str):
 
     result_queue = manager._db.queue(f"results::{task.id}", model=TaskResult)
     result_payload = TaskResult(
-        id=task.id, status="error", result=None, error=error,
+        id=task.id,
+        status="error",
+        result=None,
+        error=error,
     )
     result_queue.put(result_payload, priority=1)
 
@@ -119,7 +124,9 @@ def _handle_repetition(manager: Manager, task: Task):
         times -= 1
 
     # If conditions pass, create and enqueue the next task
-    next_execute_at = datetime.fromisoformat(task.enqueued_at) + timedelta(seconds=every)
+    next_execute_at = datetime.fromisoformat(task.enqueued_at) + timedelta(
+        seconds=every
+    )
 
     new_task = Task(
         id=task.id,
@@ -138,17 +145,23 @@ def _handle_repetition(manager: Manager, task: Task):
 
     manager._tasks[new_task.id] = new_task
     ts = next_execute_at.timestamp()
-    manager._scheduled_tasks.put(TaskSchedule(id=new_task.id, timestamp=ts), ts)
-    manager.info(id=new_task.id, task=task.task_name, msg=f"Re-enqueued for repetition.")
+    manager._scheduled_tasks.put(new_task.id, ts)
+    manager.info(
+        id=new_task.id, task=task.task_name, msg=f"Re-enqueued for repetition."
+    )
 
 
 class Server:
     def __init__(self, manager: Manager, workers: int, threads: int, manager_path: str):
         self._manager = manager
-        self._manager_path = manager_path # Store the path for process tasks
+        self._manager_path = manager_path  # Store the path for process tasks
         self._shutdown_event = threading.Event()
-        self._process_executor = concurrent.futures.ProcessPoolExecutor(max_workers=workers)
-        self._thread_executor = concurrent.futures.ThreadPoolExecutor(max_workers=threads)
+        self._process_executor = concurrent.futures.ProcessPoolExecutor(
+            max_workers=workers
+        )
+        self._thread_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=threads
+        )
 
     def serve(self):
         # MODIFIED: Main server loop to handle scheduled tasks
@@ -158,8 +171,9 @@ class Server:
                 now_timestamp = datetime.now(timezone.utc).timestamp()
 
                 while next_task := self._manager._scheduled_tasks.peek():
-                    if next_task.timestamp <= now_timestamp:
-                        self._dispatch_task(next_task.id)
+                    if next_task.priority <= now_timestamp:
+                        self._dispatch_task(next_task.data)
+                        self._manager._scheduled_tasks.get()
                     else:
                         break
 
@@ -196,10 +210,10 @@ class Server:
             return
 
         if task.mode == "process":
-            # Submit the top-level entrypoint with serializable args
             self._process_executor.submit(
-                _process_worker_entrypoint, self._manager_path, task.id
+                _worker_entrypoint, self._manager_path, task.id
             )
-        else: # mode == "thread"
-            # Threads can access the manager instance directly
-            self._thread_executor.submit(_run_task_wrapper, self._manager, task.id)
+        else:
+            self._thread_executor.submit(
+                _run_task, self._manager, task.id
+            )

@@ -1,24 +1,21 @@
 # castor/core.py
 
 import asyncio
+import types
 import uuid
-import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, Callable, Dict, List, Literal, Optional
 
 from beaver import BeaverDB, Model
 
-# Define the possible states a task can be in for type safety.
+# --- Public API Models & Types ---
+
 TaskStatus = Literal["pending", "running", "success", "failed"]
 TaskMode = Literal["thread", "process"]
 
 
 class Task(Model):
-    """
-    The data model for a task, inheriting from beaver.Model for automatic
-    serialization. This represents the state of a task stored in the database.
-    """
-
+    """Data model for a task's state, stored in the database."""
     id: str
     task_name: str
     status: TaskStatus
@@ -31,14 +28,14 @@ class Task(Model):
     finished_at: Optional[str] = None
     result: Any = None
     error: Optional[str] = None
-    # Scheduling and repetition fields
-    execute_at: Optional[str] = None  # ISO 8601 timestamp for scheduled tasks
-    execute_every: Optional[float] = None  # Interval in seconds
-    execute_times: Optional[int] = None  # Number of times to repeat
-    execute_until: Optional[str] = None  # ISO 8601 timestamp
+    execute_at: Optional[str] = None
+    execute_every: Optional[float] = None
+    execute_times: Optional[int] = None
+    execute_until: Optional[str] = None
 
 
 class TaskResult(Model):
+    """Data model for a task's result, sent via a dedicated queue."""
     id: str
     status: TaskStatus
     error: Optional[str] = None
@@ -49,77 +46,40 @@ LogLevel = Literal["info", "error"]
 
 
 class LogMessage(Model):
+    """Data model for log messages."""
     id: str | None = None
     task: str | None = None
     message: str
     level: LogLevel
 
 
-class TaskSchedule(Model):
-    id: str
-    timestamp: float
-
-
 class TaskHandle:
-    """
-    A user-facing handle to an enqueued task, providing methods to check
-    its status and retrieve its result.
-    """
-
+    """A user-facing handle to an enqueued task."""
     def __init__(self, task_id: str, manager: "Manager"):
         self._id = task_id
         self._manager = manager
-        # Each task gets a dedicated queue for its result, identified by its ID.
         self._result_queue = self._manager._db.queue(
             f"results::{self._id}", model=TaskResult
         )
 
     @property
     def id(self) -> str:
-        """The unique ID of the task."""
         return self._id
 
     def status(self) -> TaskStatus:
-        """
-        Retrieves the current status of the task from the database.
-
-        Returns:
-            The current status as a string: "pending", "running", "success", or "failed".
-        """
         task_doc = self._manager.get_task(self._id)
         if task_doc is None:
             raise ValueError(f"Task with ID '{self._id}' not found.")
         return task_doc.status
 
     def join(self, timeout: Optional[float] = None) -> Any:
-        """
-        Blocks execution until the task is complete and returns its result.
-        This is an efficient operation that waits on a dedicated result queue.
-
-        Args:
-            timeout: The maximum number of seconds to wait for the result.
-                     If None, it will wait indefinitely.
-
-        Returns:
-            The return value of the task.
-
-        Raises:
-            TimeoutError: If the timeout is reached before the task completes.
-            Exception: If the task failed, this method will re-raise the exception
-                       that occurred in the worker.
-        """
         try:
-            # This is a blocking call that waits for the worker to put the result.
             item = self._result_queue.get(timeout=timeout)
             result_payload = item.data
-
             if result_payload.status == "failed":
-                # Re-raise the exception from the worker.
                 raise Exception(
-                    result_payload.error
-                    or "Task failed without a specific error message."
+                    result_payload.error or "Task failed without a specific error message."
                 )
-
             return result_payload.result
         except TimeoutError:
             raise TimeoutError(
@@ -127,34 +87,20 @@ class TaskHandle:
             )
 
     async def resolve(self, timeout: Optional[float] = None) -> Any:
-        """
-        Asynchronously waits for the task to complete and returns its result.
-        (Async functionality to be fully implemented later)
-        """
-        # This uses the async version of the BeaverDB queue.
         async_result_queue = self._result_queue.as_async()
         item = await async_result_queue.get(timeout=timeout)
         result_payload = item.data
-
         if result_payload.status == "failed":
             raise Exception(
                 result_payload.error or "Task failed without a specific error message."
             )
-
         return result_payload.result
 
     def __bool__(self) -> bool:
-        """
-        Checks if the task is finished (either successfully or failed).
-
-        Returns:
-            True if the task is complete, False otherwise.
-        """
         current_status = self.status()
         return current_status in ["success", "failed"]
 
     def __repr__(self) -> str:
-        # Prevent circular calls by not calling status() in repr if manager isn't fully ready
         try:
             status = self.status()
         except Exception:
@@ -162,7 +108,10 @@ class TaskHandle:
         return f"<TaskHandle(id='{self.id}', status='{status}')>"
 
 
-class TaskWrapper:
+# --- Internal Classes for the Proxy Pattern ---
+
+class _BoundTask:
+    """Internal object that represents a task function bound to a specific manager."""
     def __init__(self, manager: "Manager", task_name: str, mode: TaskMode, daemon: bool, callable):
         self.callable = callable
         self.task_name = task_name
@@ -173,7 +122,100 @@ class TaskWrapper:
     def __call__(self, *args, **kwargs):
         return self.callable(*args, **kwargs)
 
-    def submit(self,
+    def submit(self, *args, **kwargs) -> TaskHandle:
+        # This is just a pass-through to the manager's internal submit logic.
+        return self.manager._create_and_submit_task(self, *args, **kwargs)
+
+
+class TaskProxy:
+    """A lightweight, unbound proxy for a task function."""
+    def __init__(self, func: Callable, mode: TaskMode, daemon: bool):
+        self.callable = func
+        self.mode = mode
+        self.daemon = daemon
+        self.task_name = func.__name__
+        self._bound_task: Optional[_BoundTask] = None
+
+    def _bind(self, manager: "Manager"):
+        """Binds this proxy to a manager, making it live."""
+        self._bound_task = _BoundTask(
+            manager=manager,
+            task_name=self.task_name,
+            mode=self.mode,
+            daemon=self.daemon,
+            callable=self.callable,
+        )
+        # Add the raw function to the manager's registry for the worker to find.
+        manager._registry[self.task_name] = self.callable
+
+    def submit(self, *args, **kwargs) -> TaskHandle:
+        """Submits the task for execution via the bound manager."""
+        if self._bound_task is None:
+            raise RuntimeError(
+                f"Task '{self.task_name}' has not been bound to a Manager instance. "
+                "Did you forget to pass the task module to the Manager constructor "
+                "or use the @manager.task decorator?"
+            )
+        return self._bound_task.submit(*args, **kwargs)
+
+
+# --- Public Decorator for "Decoupled Mode" ---
+
+def task(mode: TaskMode, daemon: bool = False) -> Callable[[Callable], TaskProxy]:
+    """
+    Decorator to define a task for 'Decoupled Mode'.
+    This creates a lightweight, unbound proxy that must be bound to a Manager
+    at application startup.
+    """
+    def decorator(func: Callable) -> TaskProxy:
+        return TaskProxy(func, mode, daemon)
+    return decorator
+
+
+# --- The Central Manager Class ---
+
+class Manager:
+    """
+    The central object for managing, binding, and dispatching tasks.
+    """
+    def __init__(self, db: BeaverDB, tasks: Optional[List[Any]] = None):
+        self._db = db
+        self._tasks = self._db.dict("castor_tasks", model=Task)
+        self._pending_tasks = self._db.queue("castor_pending_tasks")
+        self._scheduled_tasks = self._db.queue("castor_scheduled_tasks")
+        self._registry: Dict[str, Callable] = {}
+        self._logs = self._db.channel("castor_logs", model=LogMessage)
+
+        if tasks:
+            self.bind(tasks)
+
+    def bind(self, tasks_or_modules: List[Any]):
+        """
+        Scans modules or lists for TaskProxy objects and binds them to this
+        manager instance, making them ready for submission.
+        """
+        for item in tasks_or_modules:
+            if isinstance(item, types.ModuleType):
+                for attr in (getattr(item, name) for name in dir(item)):
+                    if isinstance(attr, TaskProxy):
+                        attr._bind(self)
+            elif isinstance(item, TaskProxy):
+                item._bind(self)
+
+    def task(self, mode: TaskMode, daemon: bool = False) -> Callable[[Callable], TaskProxy]:
+        """
+        Decorator for 'Simple Mode'. Creates a task and immediately binds it
+        to this manager instance. Ideal for single-file scripts.
+        """
+        def decorator(func: Callable) -> TaskProxy:
+            proxy = task(mode=mode, daemon=daemon)(func)
+            self.bind([proxy])
+            return proxy
+        return decorator
+
+    def _create_and_submit_task(
+        self,
+        bound_task: _BoundTask,
         *args,
         at: datetime | None = None,
         delay: timedelta | int | None = None,
@@ -199,11 +241,11 @@ class TaskWrapper:
             )
             execute_at_time = enqueued_time + timedelta(seconds=delay_seconds)
 
-        task = Task(
+        task_payload = Task(
             id=task_id,
-            task_name=self.task_name,
-            mode=self.mode,
-            daemon=self.daemon,
+            task_name=bound_task.task_name,
+            mode=bound_task.mode,
+            daemon=bound_task.daemon,
             status="pending",
             args=list(args),
             kwargs=kwargs,
@@ -215,97 +257,34 @@ class TaskWrapper:
             every_seconds = float(
                 every.total_seconds() if isinstance(every, timedelta) else every
             )
-            task.execute_every=every_seconds
-            task.execute_times=times
-            task.execute_until=until.isoformat() if until else None
+            task_payload.execute_every=every_seconds
+            task_payload.execute_times=times
+            task_payload.execute_until=until.isoformat() if until else None
 
-        return self.manager.submit(task, execute_at_time)
+        return self.submit(task_payload, execute_at_time)
 
-
-class Manager:
-    """
-    The central object for managing tasks. It holds the database connection
-    and serves as the entry point for defining and dispatching tasks.
-    """
-
-    def __init__(self, db: BeaverDB):
-        self._db = db
-        # A dictionary for the state of every task, keyed by task ID.
-        self._tasks = self._db.dict("castor_tasks", model=Task)
-        # The central queue where new tasks are placed for workers.
-        self._pending_tasks = self._db.queue("castor_pending_tasks")
-        # NEW: A sorted set for scheduled tasks. Score is the timestamp.
-        self._scheduled_tasks = self._db.queue("castor_scheduled_tasks", model=TaskSchedule)
-        # A registry to hold references to the decorated functions.
-        self._registry: Dict[str, Callable] = {}
-        self._logs = self._db.channel("castor_logs", model=LogMessage)
 
     def submit(self, task:Task, at: datetime):
         self._tasks[task.id] = task
-
         ts = at.timestamp()
-        # If the task is scheduled for the future, add it to the scheduled set.
-        # Otherwise, put it directly into the pending queue.
         if at > datetime.now(timezone.utc):
-            self._scheduled_tasks.put(TaskSchedule(id=task.id, timestamp=ts), ts)
+            self._scheduled_tasks.put(task.id, ts)
         else:
             self._pending_tasks.put(task.id, priority=0)
-
         return TaskHandle(task.id, self)
 
     def get_task(self, task_id: str) -> Optional[Task]:
-        """Retrieves a task's state document from the database."""
-        # Use the efficient .get() method from beaver's DictManager.
-        # It automatically deserializes the JSON data back into a Task object.
-        task_doc = self._tasks.get(task_id)
-        if task_doc:
-            return task_doc
-        return None
+        return self._tasks.get(task_id)
 
     def get_callable(self, task_name: str) -> Callable:
-        """
-        Retrieves the registered task function and its metadata.
-        This is used by the worker to find the function to execute.
-        """
         return self._registry[task_name]
-
-    def task(self, mode: TaskMode, daemon: bool = False):
-        """
-        A decorator to register a function as a background task.
-
-        Args:
-            mode: The concurrency model ('thread' for I/O-bound, 'process' for CPU-bound).
-            daemon: If True, the task is non-critical and can be terminated on worker shutdown.
-        """
-        def decorator(func: Callable):
-            task_name = f"{func.__name__}"
-
-            if task_name in self._registry:
-                raise ValueError(f"Task with name '{task_name}' is already registered.")
-
-            # Store task metadata, including mode and daemon status.
-            self._registry[task_name] = func
-
-            return TaskWrapper(self, task_name, mode, daemon, func)
-
-        return decorator
 
     def info(self, msg: str, id: str | None = None, task: str | None = None):
         self._logs.publish(
-            LogMessage(
-                id=id,
-                task=task,
-                message=msg,
-                level="info",
-            )
+            LogMessage(id=id, task=task, message=msg, level="info")
         )
 
     def error(self, msg: str, id: str | None = None, task: str | None = None):
         self._logs.publish(
-            LogMessage(
-                id=id,
-                task=task,
-                message=msg,
-                level="error",
-            )
+            LogMessage(id=id, task=task, message=msg, level="error")
         )

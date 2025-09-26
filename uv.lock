@@ -3,16 +3,16 @@ requires-python = ">=3.13"
 
 [[package]]
 name = "beaver-db"
-version = "0.16.7"
+version = "0.16.8"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/f0/02/fe3ddb0c69ffd0859fac438db2a1e8df31e454d3fd68a62f300d1cbfae3f/beaver_db-0.16.7.tar.gz", hash = "sha256:06674dabd44a5e4429a15b89f3484f21ed7a25a83db46160539546bbf8a8f521", size = 63300 }
+sdist = { url = "https://files.pythonhosted.org/packages/3a/db/ffba26c2c4de4b5c86c86ce119aec4d92b9de4c19cfbae8a111243e77d2c/beaver_db-0.16.8.tar.gz", hash = "sha256:11bf3f843e40eb4eb18cdb70f6bcb98f14be8332316d7e45b455667be98e0e10", size = 63599 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/68/99/ce293f3504d2e97fe5ba3a8977906627df173df55a30a9b6d6ef19e8f0cd/beaver_db-0.16.7-py3-none-any.whl", hash = "sha256:b2d92e5e7cb05bf86854e4d715eb42d2d53ae54d8c6cd089c062856fe8bec056", size = 36650 },
+    { url = "https://files.pythonhosted.org/packages/c1/1a/4ccb440dca4390212336cd8f53d466bd01faf1ab8a52742525d7adbd8412/beaver_db-0.16.8-py3-none-any.whl", hash = "sha256:8294679fe95a44366a25bb998cec95b0f66efa528d508ab4f81e20444b83281d", size = 36905 },
 ]
 
 [[package]]
 name = "castor-io"
-version = "0.4.0"
+version = "0.4.1"
 source = { editable = "." }
 dependencies = [
     { name = "beaver-db" },
@@ -21,7 +21,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "beaver-db", specifier = ">=0.16.7" },
+    { name = "beaver-db", specifier = ">=0.16.8" },
     { name = "typer", specifier = ">=0.19.2" },
 ]
 
