@@ -1,6 +1,3 @@
-# castor/core.py
-
-import asyncio
 import types
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -10,17 +7,19 @@ from beaver import BeaverDB, Model
 
 # --- Public API Models & Types ---
 
-TaskStatus = Literal["pending", "running", "success", "failed"]
+TaskStatus = Literal["pending", "running", "success", "failed", "cancelling"]
 TaskMode = Literal["thread", "process"]
 
 
 class Task(Model):
     """Data model for a task's state, stored in the database."""
+
     id: str
     task_name: str
     status: TaskStatus
     mode: TaskMode
     daemon: bool
+    cancellable: bool  # <--- NEW
     args: List[Any]
     kwargs: Dict[str, Any]
     enqueued_at: str
@@ -36,6 +35,7 @@ class Task(Model):
 
 class TaskResult(Model):
     """Data model for a task's result, sent via a dedicated queue."""
+
     id: str
     status: TaskStatus
     error: Optional[str] = None
@@ -47,6 +47,7 @@ LogLevel = Literal["info", "error"]
 
 class LogMessage(Model):
     """Data model for log messages."""
+
     id: str | None = None
     task: str | None = None
     message: str
@@ -55,6 +56,7 @@ class LogMessage(Model):
 
 class TaskHandle:
     """A user-facing handle to an enqueued task."""
+
     def __init__(self, task_id: str, manager: "Manager"):
         self._id = task_id
         self._manager = manager
@@ -72,13 +74,18 @@ class TaskHandle:
             raise ValueError(f"Task with ID '{self._id}' not found.")
         return task_doc.status
 
+    def cancel(self):
+        """Requests the task to be cancelled by setting a flag with a TTL."""
+        self._manager._cancellation_flags.set(self.id, True)
+
     def join(self, timeout: Optional[float] = None) -> Any:
         try:
             item = self._result_queue.get(timeout=timeout)
             result_payload = item.data
             if result_payload.status == "failed":
                 raise Exception(
-                    result_payload.error or "Task failed without a specific error message."
+                    result_payload.error
+                    or "Task failed without a specific error message."
                 )
             return result_payload.result
         except TimeoutError:
@@ -110,13 +117,24 @@ class TaskHandle:
 
 # --- Internal Classes for the Proxy Pattern ---
 
+
 class _BoundTask:
     """Internal object that represents a task function bound to a specific manager."""
-    def __init__(self, manager: "Manager", task_name: str, mode: TaskMode, daemon: bool, callable):
+
+    def __init__(
+        self,
+        manager: "Manager",
+        task_name: str,
+        mode: TaskMode,
+        daemon: bool,
+        cancellable: bool,
+        callable,
+    ):
         self.callable = callable
         self.task_name = task_name
         self.mode = mode
         self.daemon = daemon
+        self.cancellable = cancellable  # <--- NEW
         self.manager = manager
 
     def __call__(self, *args, **kwargs):
@@ -129,10 +147,14 @@ class _BoundTask:
 
 class TaskProxy:
     """A lightweight, unbound proxy for a task function."""
-    def __init__(self, func: Callable, mode: TaskMode, daemon: bool):
+
+    def __init__(
+        self, func: Callable, mode: TaskMode, daemon: bool, cancellable: bool
+    ):  # <--- MODIFIED
         self.callable = func
         self.mode = mode
         self.daemon = daemon
+        self.cancellable = cancellable  # <--- NEW
         self.task_name = func.__name__
         self._bound_task: Optional[_BoundTask] = None
 
@@ -143,12 +165,22 @@ class TaskProxy:
             task_name=self.task_name,
             mode=self.mode,
             daemon=self.daemon,
+            cancellable=self.cancellable,  # <--- NEW
             callable=self.callable,
         )
         # Add the raw function to the manager's registry for the worker to find.
         manager._registry[self.task_name] = self.callable
 
-    def submit(self, *args, **kwargs) -> TaskHandle:
+    def submit(
+        self,
+        *args,
+        at: datetime | None = None,
+        delay: timedelta | int | None = None,
+        every: timedelta | int | None = None,
+        times: int | None = None,
+        until: datetime | None = None,
+        **kwargs,
+    ) -> TaskHandle:
         """Submits the task for execution via the bound manager."""
         if self._bound_task is None:
             raise RuntimeError(
@@ -156,33 +188,43 @@ class TaskProxy:
                 "Did you forget to pass the task module to the Manager constructor "
                 "or use the @manager.task decorator?"
             )
-        return self._bound_task.submit(*args, **kwargs)
+        return self._bound_task.submit(
+            *args, at=at, delay=delay, every=every, times=times, until=until, **kwargs
+        )
 
 
 # --- Public Decorator for "Decoupled Mode" ---
 
-def task(mode: TaskMode, daemon: bool = False) -> Callable[[Callable], TaskProxy]:
+
+def task(
+    mode: TaskMode, daemon: bool = False, cancellable: bool = False
+) -> Callable[[Callable], TaskProxy]:
     """
     Decorator to define a task for 'Decoupled Mode'.
     This creates a lightweight, unbound proxy that must be bound to a Manager
     at application startup.
     """
+
     def decorator(func: Callable) -> TaskProxy:
-        return TaskProxy(func, mode, daemon)
+        return TaskProxy(func, mode, daemon, cancellable)
+
     return decorator
 
 
 # --- The Central Manager Class ---
 
+
 class Manager:
     """
     The central object for managing, binding, and dispatching tasks.
     """
+
     def __init__(self, db: BeaverDB, tasks: Optional[List[Any]] = None):
         self._db = db
         self._tasks = self._db.dict("castor_tasks", model=Task)
         self._pending_tasks = self._db.queue("castor_pending_tasks")
         self._scheduled_tasks = self._db.queue("castor_scheduled_tasks")
+        self._cancellation_flags = self._db.dict("castor_cancellation_flags")
         self._registry: Dict[str, Callable] = {}
         self._logs = self._db.channel("castor_logs", model=LogMessage)
 
@@ -202,15 +244,21 @@ class Manager:
             elif isinstance(item, TaskProxy):
                 item._bind(self)
 
-    def task(self, mode: TaskMode, daemon: bool = False) -> Callable[[Callable], TaskProxy]:
+    def task(
+        self, mode: TaskMode, daemon: bool = False, cancellable: bool = False
+    ) -> Callable[[Callable], TaskProxy]:  # <--- MODIFIED
         """
         Decorator for 'Simple Mode'. Creates a task and immediately binds it
         to this manager instance. Ideal for single-file scripts.
         """
+
         def decorator(func: Callable) -> TaskProxy:
-            proxy = task(mode=mode, daemon=daemon)(func)
+            proxy = task(mode=mode, daemon=daemon, cancellable=cancellable)(
+                func
+            )  # <--- MODIFIED
             self.bind([proxy])
             return proxy
+
         return decorator
 
     def _create_and_submit_task(
@@ -246,6 +294,7 @@ class Manager:
             task_name=bound_task.task_name,
             mode=bound_task.mode,
             daemon=bound_task.daemon,
+            cancellable=bound_task.cancellable,
             status="pending",
             args=list(args),
             kwargs=kwargs,
@@ -257,14 +306,13 @@ class Manager:
             every_seconds = float(
                 every.total_seconds() if isinstance(every, timedelta) else every
             )
-            task_payload.execute_every=every_seconds
-            task_payload.execute_times=times
-            task_payload.execute_until=until.isoformat() if until else None
+            task_payload.execute_every = every_seconds
+            task_payload.execute_times = times
+            task_payload.execute_until = until.isoformat() if until else None
 
         return self.submit(task_payload, execute_at_time)
 
-
-    def submit(self, task:Task, at: datetime):
+    def submit(self, task: Task, at: datetime):
         self._tasks[task.id] = task
         ts = at.timestamp()
         if at > datetime.now(timezone.utc):
@@ -279,12 +327,12 @@ class Manager:
     def get_callable(self, task_name: str) -> Callable:
         return self._registry[task_name]
 
+    def is_cancelled(self, task_id: str) -> bool:
+        """Checks if a cancellation flag has been set for the task."""
+        return task_id in self._cancellation_flags
+
     def info(self, msg: str, id: str | None = None, task: str | None = None):
-        self._logs.publish(
-            LogMessage(id=id, task=task, message=msg, level="info")
-        )
+        self._logs.publish(LogMessage(id=id, task=task, message=msg, level="info"))
 
     def error(self, msg: str, id: str | None = None, task: str | None = None):
-        self._logs.publish(
-            LogMessage(id=id, task=task, message=msg, level="error")
-        )
+        self._logs.publish(LogMessage(id=id, task=task, message=msg, level="error"))

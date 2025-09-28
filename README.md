@@ -37,7 +37,7 @@ This is the fastest way to get started. It's perfect for single-file application
 
 In this mode, you create a Manager instance and use its @manager.task decorator to define and immediately bind your tasks.
 
-```
+```python
 # my_script.py
 import time
 from beaver import BeaverDB
@@ -132,27 +132,24 @@ manager = Manager(db, tasks=[tasks])
 # or other parts of your application.
 ```
 
-#### 3. Dispatch tasks from anywhere
+#### 3. Dispatch tasks from a web framework like FastAPI
 
 Now you can import your tasks directly and they will be correctly routed through the manager you configured.
 
 ```python
 # api.py
-from tasks import send_email, generate_report
+from fastapi import FastAPI
+from tasks import send_email
 
+# The manager from main.py has already configured the tasks.
+app = FastAPI()
+
+@app.post("/signup")
 def handle_new_user_signup(email_address: str):
-    print("User signed up, dispatching welcome email.")
+    print(f"Received signup for {email_address}, dispatching welcome email.")
     # This call is automatically routed through the configured manager
-    send_email.submit(email_address)
-
-def handle_end_of_month():
-    print("End of month, dispatching report generation.")
-    generate_report.submit("September")
-
-# In a real app, these functions would be called from web endpoints.
-if __name__ == "__main__":
-    handle_new_user_signup("bob@example.com")
-    handle_end_of_month()
+    task = send_email.submit(email_address)
+    return {"message": "Welcome email is being sent!", "task_id": task.id}
 ```
 
 #### 4. Run the worker & your application
@@ -163,11 +160,13 @@ In Terminal 1, run the worker: Point it to the configured manager in your main f
 castor main:manager -i # Using interactive mode for a nice dashboard
 ```
 
-In Terminal 2, run your application logic:
+In Terminal 2, run your FastAPI application:
 
 ```bash
 fastapi run api:app
 ```
+
+You can now send requests to your API (e.g., `curl -X POST "/signup?email_address=test@example.com"`) and see the tasks being processed by the worker.
 
 ## Features
 
@@ -175,9 +174,56 @@ fastapi run api:app
 - **Execution Modes:** Explicitly define tasks as `thread` (for I/O-bound work) or `process` (for CPU-bound work).
 - **Task Handle:** Calling `.submit()` on a task returns a `TaskHandle` object, allowing you to check the `.status()` or wait for the result.
 - **Scheduled and Recurring Tasks**: Dispatch tasks to run at a specific time in the future using `at` or after a certain `delay`. Create recurring tasks that run `every` X seconds, for a specific number of `times`, or `until` a certain date.
+- **Cancellable Tasks**: For long-running tasks, you can enable cooperative cancellation. By writing your task as a generator and using `yield` as a checkpoint, the task can be stopped gracefully from another process.
 - **Synchronous and Asynchronous Results:** Block for a result with `.join()` or wait for it asynchronously with `.resolve()`.
 - **Reliable Backend:** Uses `beaver-db` for a simple and reliable file-based persistence layer.
 - **CLI Worker:** A built-in command-line interface to run the worker server.
+
+### Example: Cooperative Cancellation
+
+For long-running tasks that you might need to stop, you can implement cooperative cancellation with minimal boilerplate.
+
+**1. Define a cancellable task**
+
+Mark the task with `cancellable=True` and write it as a generator. Use `yield` at points where the task can be safely interrupted.
+
+```python
+# tasks.py
+import time
+from castor import task
+
+@task(mode='thread', cancellable=True)
+def long_report():
+    """A long-running task that yields at each step."""
+    for i in range(10):
+        print(f"Processing step {i+1}/10...")
+        time.sleep(1)
+        yield # This is the cancellation checkpoint
+    return {"status": "complete"}
+```
+
+**2. Dispatch and cancel the task**
+
+From your application code, you can request the task to stop.
+
+```python
+# main.py
+from tasks import long_report
+import time
+
+# Dispatch the task
+report_task = long_report.submit()
+print(f"Dispatched task: {report_task.id}")
+
+# Let it run for a few seconds
+time.sleep(3)
+
+# Request cancellation
+print("Requesting cancellation...")
+report_task.cancel()
+```
+
+The worker will detect the cancellation request at the next `yield` point and terminate the task.
 
 ## Roadmap
 

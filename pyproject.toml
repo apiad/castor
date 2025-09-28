@@ -1,6 +1,6 @@
 [project]
 name = "castor-io"
-version = "0.5.1"
+version = "0.6.0"
 description = "Minimalistic, embedded task manager."
 readme = "README.md"
 authors = [

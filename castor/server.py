@@ -1,15 +1,10 @@
-# castor/server.py
-
 import concurrent.futures
 import threading
-import time
 import importlib
 import traceback
 from datetime import datetime, timezone, timedelta
 from typing import Any, Literal
-import uuid
 
-from beaver import Model
 from .core import Manager, Task, TaskResult
 
 
@@ -51,12 +46,35 @@ def _run_task(manager: Manager, task_id: str):
     func = manager.get_callable(task.task_name)
 
     try:
-        # 2. Execute the actual task function
-        result = func(*task.args, **task.kwargs)
-        # 3. Handle successful execution
-        _succeed_task(manager, task, result)
+        # Handle cancellable and regular tasks differently ---
+        if task.cancellable:
+            # For cancellable tasks, we iterate through the generator
+            generator = func(*task.args, **task.kwargs)
+            final_result = None
+            while True:
+                # 1. Check for cancellation BEFORE the next step
+                if manager.is_cancelled(task.id):
+                    # Fail the task with a specific "cancelled" message
+                    _fail_task(manager, task, "Task was cancelled by user.", status="cancelling")
+                    return
+
+                try:
+                    # 2. Run the task until the next `yield`
+                    next(generator)
+                except StopIteration as e:
+                    # 3. The generator is finished. Its return value is in e.value.
+                    final_result = e.value
+                    break  # Exit the loop
+
+            # 4. If the loop finished, the task completed successfully.
+            _succeed_task(manager, task, final_result)
+        else:
+            # For regular tasks, execute as normal
+            result = func(*task.args, **task.kwargs)
+            _succeed_task(manager, task, result)
+
     except Exception:
-        # 4. Handle failed execution
+        # 4. Handle failed execution for non-cancellable tasks or setup errors
         error_message = traceback.format_exc()
         _fail_task(manager, task, error_message)
 
@@ -81,13 +99,16 @@ def _succeed_task(manager: Manager, task: Task, result: Any):
     _handle_repetition(manager, task)
 
 
-def _fail_task(manager: Manager, task: Task, error: str):
+def _fail_task(manager: Manager, task: Task, error: str, status: Literal["failed", "cancelling"] = "failed"): # <--- MODIFIED
     """Updates the task's state on failure and pushes the error."""
-    task.status = "failed"
+    task.status = status # <--- MODIFIED
     task.finished_at = datetime.now(timezone.utc).isoformat()
     task.error = error
     manager._tasks[task.id] = task
-    manager.error(id=task.id, task=task.task_name, msg=error)
+    if status == "cancelling": # <--- NEW
+        manager.info(id=task.id, task=task.task_name, msg="Cancelled.")
+    else:
+        manager.error(id=task.id, task=task.task_name, msg=error)
 
     result_queue = manager._db.queue(f"results::{task.id}", model=TaskResult)
     result_payload = TaskResult(
@@ -133,6 +154,7 @@ def _handle_repetition(manager: Manager, task: Task):
         task_name=task.task_name,
         mode=task.mode,
         daemon=task.daemon,
+        cancellable=task.cancellable,
         status="pending",
         args=task.args,
         kwargs=task.kwargs,
@@ -164,7 +186,7 @@ class Server:
         )
 
     def serve(self):
-        # MODIFIED: Main server loop to handle scheduled tasks
+        # Main server loop to handle scheduled tasks
         while not self._shutdown_event.is_set():
             try:
                 # 1. Check for any due scheduled tasks
