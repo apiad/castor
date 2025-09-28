@@ -336,3 +336,20 @@ class Manager:
 
     def error(self, msg: str, id: str | None = None, task: str | None = None):
         self._logs.publish(LogMessage(id=id, task=task, message=msg, level="error"))
+
+    def prune(self):
+        """
+        Deletes all tasks from the main task dictionary that are in a terminal state
+        (i.e., 'success', 'failed', or 'cancelling').
+        """
+        terminal_statuses = {"success", "failed", "cancelling"}
+        tasks_to_delete = [
+            task_id
+            for task_id, task in self._tasks.items()
+            if task.status in terminal_statuses
+        ]
+
+        for task_id in tasks_to_delete:
+            del self._tasks[task_id]
+
+        return len(tasks_to_delete)
