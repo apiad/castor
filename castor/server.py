@@ -113,7 +113,7 @@ def _fail_task(manager: Manager, task: Task, error: str, status: Literal["failed
     result_queue = manager._db.queue(f"results::{task.id}", model=TaskResult)
     result_payload = TaskResult(
         id=task.id,
-        status="error",
+        status="failed",
         result=None,
         error=error,
     )
