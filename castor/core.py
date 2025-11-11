@@ -3,7 +3,8 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any, Callable, Dict, List, Literal, Optional
 
-from beaver import BeaverDB, Model
+from beaver import BeaverDB
+from pydantic import BaseModel
 
 # --- Public API Models & Types ---
 
@@ -11,7 +12,7 @@ TaskStatus = Literal["pending", "running", "success", "failed", "cancelling"]
 TaskMode = Literal["thread", "process"]
 
 
-class Task(Model):
+class Task(BaseModel):
     """Data model for a task's state, stored in the database."""
 
     id: str
@@ -33,7 +34,7 @@ class Task(Model):
     execute_until: Optional[str] = None
 
 
-class TaskResult(Model):
+class TaskResult(BaseModel):
     """Data model for a task's result, sent via a dedicated queue."""
 
     id: str
@@ -45,7 +46,7 @@ class TaskResult(Model):
 LogLevel = Literal["info", "error"]
 
 
-class LogMessage(Model):
+class LogMessage(BaseModel):
     """Data model for log messages."""
 
     id: str | None = None

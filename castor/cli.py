@@ -2,6 +2,7 @@ import importlib
 import sys
 from typing import Optional
 
+import rich
 import typer
 
 from .core import Manager
@@ -33,8 +34,12 @@ def run(
     try:
         module_path, variable_name = path.split(":", 1)
     except ValueError:
-        print(f"Error: Invalid path '{path}'. Must be in 'module.path:variable' format.")
-        raise typer.Exit(code=1)
+        module_path = path
+        variable_name = "manager"
+        rich.print(
+            f"[yellow]Warning:[/yellow] Using default variable name 'manager'. "
+            f"Specify the variable explicitly with 'module:variable' format to avoid this warning."
+        )
 
     try:
         module = importlib.import_module(module_path)
